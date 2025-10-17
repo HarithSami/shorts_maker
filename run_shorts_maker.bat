@@ -1,5 +1,5 @@
 @echo off
-SET SCRIPT_NAME=shorts_maker.py
+SET SCRIPT_NAME=main.py
 SET VENV_NAME=venv
 
 echo ------------------------------------------
