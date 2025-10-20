@@ -2,15 +2,13 @@
 Video analysis functionality for scene detection and speech boundary detection
 """
 import os
-import wave
-import shutil
+import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 from moviepy.video.io.VideoFileClip import VideoFileClip
-from moviepy.audio.io.AudioFileClip import AudioFileClip
 from scenedetect import open_video, SceneManager
 from scenedetect.detectors import ContentDetector
-import webrtcvad
-from spleeter.separator import Separator
+import librosa
+from scipy import signal
 
 
 class AnalysisThread(QThread):
@@ -21,8 +19,6 @@ class AnalysisThread(QThread):
     def __init__(self, video_path):
         super().__init__()
         self.video_path = video_path
-        # Initialize Spleeter for vocal isolation
-        self.separator = Separator('spleeter:2stems')  # Separates vocals and accompaniment
         
     def run(self):
         try:
@@ -69,7 +65,7 @@ class AnalysisThread(QThread):
             return []
     
     def detect_speech_boundaries(self):
-        """Detect speech boundaries using webrtcvad on isolated vocals"""
+        """Detect speech boundaries using energy-based analysis with librosa"""
         try:
             # Extract audio from video
             video = VideoFileClip(self.video_path)
@@ -78,85 +74,94 @@ class AnalysisThread(QThread):
                 video.close()
                 return []
             
-            # Write full audio to temporary file for Spleeter
-            temp_full_audio = "temp_full_audio.wav"
-            video.audio.write_audiofile(temp_full_audio, fps=44100, nbytes=2, 
+            # Write audio to temporary file
+            temp_audio = "temp_audio.wav"
+            video.audio.write_audiofile(temp_audio, fps=22050, nbytes=2, 
                                        codec='pcm_s16le', logger=None)
             video.close()
             
-            self.progress.emit("Isolating vocals from audio...")
+            self.progress.emit("Analyzing audio energy patterns...")
             
-            # Use Spleeter to isolate vocals
-            output_dir = "temp_spleeter_output"
-            self.separator.separate_to_file(temp_full_audio, output_dir)
+            # Load audio with librosa
+            y, sr = librosa.load(temp_audio, sr=22050, mono=True)
             
-            # The isolated vocals will be in output_dir/temp_full_audio/vocals.wav
-            vocals_path = os.path.join(output_dir, "temp_full_audio", "vocals.wav")
+            # Apply high-pass filter to reduce low-frequency noise
+            sos = signal.butter(10, 300, 'hp', fs=sr, output='sos')
+            y_filtered = signal.sosfilt(sos, y)
             
-            # Resample vocals to 16kHz for webrtcvad
-            temp_vocals_16k = "temp_vocals_16k.wav"
-            vocals_clip = AudioFileClip(vocals_path)
-            vocals_clip.write_audiofile(temp_vocals_16k, fps=16000, nbytes=2,
-                                       codec='pcm_s16le', logger=None)
-            vocals_clip.close()
+            # Calculate energy in frames
+            frame_length = int(0.025 * sr)  # 25ms frames
+            hop_length = int(0.010 * sr)    # 10ms hop
             
-            self.progress.emit("Detecting speech patterns in vocals...")
+            # Calculate RMS energy
+            rms = librosa.feature.rms(y=y_filtered, frame_length=frame_length, 
+                                     hop_length=hop_length)[0]
             
-            # Process isolated vocals with webrtcvad
-            vad = webrtcvad.Vad(2)  # Aggressiveness: 0-3 (2 is balanced)
+            # Calculate spectral centroid (helps identify speech)
+            spectral_centroid = librosa.feature.spectral_centroid(
+                y=y_filtered, sr=sr, n_fft=frame_length, hop_length=hop_length)[0]
             
-            with wave.open(temp_vocals_16k, 'rb') as wf:
-                sample_rate = wf.getframerate()
-                frame_duration = 30  # ms
-                frame_size = int(sample_rate * frame_duration / 1000)
+            # Normalize features
+            rms_norm = (rms - np.mean(rms)) / (np.std(rms) + 1e-10)
+            centroid_norm = (spectral_centroid - np.mean(spectral_centroid)) / (np.std(spectral_centroid) + 1e-10)
+            
+            # Combine features for better speech detection
+            # Speech typically has moderate energy and spectral centroid
+            combined_energy = 0.7 * rms_norm + 0.3 * centroid_norm
+            
+            # Adaptive thresholding
+            threshold = np.percentile(combined_energy, 40)  # Lower 40% is likely silence
+            
+            # Detect speech/silence transitions
+            is_speech = combined_energy > threshold
+            
+            # Find boundaries where speech ends (silence begins)
+            speech_boundaries = []
+            in_speech = False
+            silence_frames = 0
+            min_silence_frames = int(0.3 * sr / hop_length)  # 300ms of silence
+            min_speech_frames = int(0.25 * sr / hop_length)  # 250ms minimum speech
+            speech_start_frame = 0
+            
+            for i, speech_frame in enumerate(is_speech):
+                time = librosa.frames_to_time(i, sr=sr, hop_length=hop_length)
                 
-                frames = []
-                while True:
-                    frame = wf.readframes(frame_size)
-                    if len(frame) < frame_size * 2:  # 2 bytes per sample
-                        break
-                    frames.append(frame)
-                
-                # Detect speech/silence in isolated vocals
-                speech_boundaries = []
-                in_speech = False
-                speech_start = 0
-                silence_duration = 0
-                min_silence = 0.3  # Minimum silence to mark sentence boundary
-                
-                for i, frame in enumerate(frames):
-                    timestamp = i * frame_duration / 1000.0
-                    
-                    try:
-                        is_speech = vad.is_speech(frame, sample_rate)
-                    except:
-                        continue
-                    
-                    if is_speech:
-                        if not in_speech:
-                            # Speech started
-                            speech_start = timestamp
-                            in_speech = True
-                        silence_duration = 0
-                    else:
-                        # Silence detected
-                        if in_speech:
-                            silence_duration += frame_duration / 1000.0
+                if speech_frame:
+                    if not in_speech:
+                        # Speech started
+                        speech_start_frame = i
+                        in_speech = True
+                    silence_frames = 0
+                else:
+                    # Silence detected
+                    if in_speech:
+                        silence_frames += 1
+                        
+                        # If silence long enough and speech was long enough
+                        if silence_frames >= min_silence_frames:
+                            speech_duration = i - speech_start_frame
+                            if speech_duration >= min_speech_frames:
+                                # Mark this as a speech boundary
+                                boundary_time = librosa.frames_to_time(
+                                    i - silence_frames // 2, sr=sr, hop_length=hop_length)
+                                speech_boundaries.append(boundary_time)
                             
-                            # If silence long enough, mark as sentence boundary
-                            if silence_duration >= min_silence:
-                                speech_boundaries.append(timestamp)
-                                in_speech = False
-                                silence_duration = 0
+                            in_speech = False
+                            silence_frames = 0
             
-            # Clean up temporary files
-            for temp_file in [temp_full_audio, temp_vocals_16k]:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            if os.path.exists(output_dir):
-                shutil.rmtree(output_dir)
+            # Clean up temporary file
+            if os.path.exists(temp_audio):
+                os.remove(temp_audio)
             
-            return speech_boundaries
+            # Remove boundaries that are too close together (< 1 second)
+            filtered_boundaries = []
+            last_boundary = -999
+            for boundary in speech_boundaries:
+                if boundary - last_boundary > 1.0:
+                    filtered_boundaries.append(boundary)
+                    last_boundary = boundary
+            
+            return filtered_boundaries
             
         except Exception as e:
             print(f"Speech detection error: {e}")
