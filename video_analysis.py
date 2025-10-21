@@ -16,9 +16,11 @@ class AnalysisThread(QThread):
     progress = pyqtSignal(str)
     finished = pyqtSignal(dict)
     
-    def __init__(self, video_path):
+    def __init__(self, video_path, analyze_scenes=True, analyze_audio=True):
         super().__init__()
         self.video_path = video_path
+        self.analyze_scenes = analyze_scenes
+        self.analyze_audio = analyze_audio
         
     def run(self):
         try:
@@ -28,13 +30,15 @@ class AnalysisThread(QThread):
                 'error': None
             }
             
-            # Detect scenes
-            self.progress.emit("Detecting scene changes...")
-            result['scenes'] = self.detect_scenes()
+            # Detect scenes if enabled
+            if self.analyze_scenes:
+                self.progress.emit("Detecting scene changes...")
+                result['scenes'] = self.detect_scenes()
             
-            # Detect speech boundaries
-            self.progress.emit("Analyzing speech patterns...")
-            result['speech_boundaries'] = self.detect_speech_boundaries()
+            # Detect speech boundaries if enabled
+            if self.analyze_audio:
+                self.progress.emit("Analyzing speech patterns...")
+                result['speech_boundaries'] = self.detect_speech_boundaries()
             
             self.finished.emit(result)
             

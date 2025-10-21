@@ -17,8 +17,6 @@ class VideoClipExtractor(MainWindow):
     """Main application class that combines UI with business logic"""
     
     def __init__(self):
-        super().__init__()
-        
         # Application state
         self.video_path = None
         self.video_duration = 0
@@ -30,91 +28,77 @@ class VideoClipExtractor(MainWindow):
         self.scenes = []
         self.speech_boundaries = []
         
-        # Connect UI signals to handlers
+        # Initialize parent (this creates all UI elements)
+        super().__init__()
+        
+        # Connect UI signals to handlers (after UI is created)
         self._connect_signals()
         
     def _connect_signals(self):
         """Connect UI signals to their respective handlers"""
-        self.load_btn.clicked.connect(self.load_video)
+        self.drop_zone.file_dropped.connect(self.load_video_file)
         self.generate_btn.clicked.connect(self.generate_clips)
-        self.add_clip_btn.clicked.connect(self.add_clip)
-        self.remove_btn.clicked.connect(self.remove_clip)
         self.clear_btn.clicked.connect(self.clear_all_clips)
         self.export_btn.clicked.connect(self.export_clips)
+        self.analyze_btn.clicked.connect(self.analyze_video)
         
-        # Connect mode change to trigger analysis if needed
-        self.mode_combo.currentTextChanged.connect(self.on_mode_changed)
+        # Connect generation method change to enable/disable smart options
+        self.generation_method.currentTextChanged.connect(self.on_method_changed)
     
-    def dragEnterEvent(self, event):
-        """Handle drag enter events for file dropping"""
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            event.ignore()
-    
-    def dropEvent(self, event):
-        """Handle file drop events"""
-        files = [u.toLocalFile() for u in event.mimeData().urls()]
-        if files:
-            video_file = files[0]
-            if is_valid_video_file(video_file):
-                self.load_video_file(video_file)
-            else:
-                QMessageBox.warning(self, "Invalid File", "Please drop a valid video file!")
-    
-    def load_video(self):
-        """Load video file through file dialog"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select Video File", "", 
-            "Video Files (*.mp4 *.avi *.mov *.mkv *.flv);;All Files (*)"
-        )
-        
-        if file_path:
-            self.load_video_file(file_path)
+
     
     def load_video_file(self, file_path):
         """Load a video file and update UI"""
+        if not is_valid_video_file(file_path):
+            QMessageBox.warning(self, "Invalid File", "Please select a valid video file!")
+            return
+            
         self.video_path = file_path
         
         # Reset analysis data
         self.scenes = []
         self.speech_boundaries = []
-        self.analysis_label.setText("")
         
         try:
             self.video_duration = get_video_info(file_path)
             
-            self.start_spin.setMaximum(self.video_duration)
-            self.end_spin.setMaximum(self.video_duration)
-            self.end_spin.setValue(min(60, self.video_duration))
+            # Update video info display
+            filename = os.path.basename(file_path)
+            duration_str = format_time(self.video_duration)
+            self.video_info_label.setText(f"📹 {filename} • {duration_str}")
             
-            self.info_label.setText(f"✓ Video loaded: {os.path.basename(file_path)} - Duration: {format_time(self.video_duration)}")
-            self.info_label.setStyleSheet("padding: 10px; background-color: #d4edda; border-radius: 5px; color: #155724;")
+            # Enable buttons
+            self.analyze_btn.setEnabled(True)
+            self.generate_btn.setEnabled(True)
             
         except Exception as e:
-            QMessageBox.critical(self, "Error", str(e))
+            QMessageBox.critical(self, "Error", f"Failed to load video: {str(e)}")
     
-    def on_mode_changed(self, mode):
-        """Handle mode change - trigger analysis if needed"""
-        if not self.video_path:
-            return
-            
-        # Check if we need analysis data but don't have it
-        needs_scenes = "Scene" in mode and not self.scenes
-        needs_speech = "Audio" in mode and not self.speech_boundaries
+    def get_current_mode(self):
+        """Get the current mode based on generation method selection"""
+        method = self.generation_method.currentText()
+        if "Smart" in method:
+            return "Smart"
+        else:
+            return "Random"
+    
+    def on_method_changed(self, method):
+        """Handle generation method change - enable/disable smart options"""
+        is_smart_method = "Smart" in method
         
-        if needs_scenes or needs_speech:
+        # If switched to smart method and no analysis done yet
+        if is_smart_method and self.video_path and not self.scenes and not self.speech_boundaries:
             reply = QMessageBox.question(
                 self, "Analysis Required",
-                f"{mode} mode requires video analysis.\n\nAnalyze video now?",
+                "Smart detection methods require video analysis.\n\nAnalyze video now?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
             )
             
             if reply == QMessageBox.StandardButton.Yes:
                 self.analyze_video()
             else:
-                # Reset to Random mode
-                self.mode_combo.setCurrentIndex(0)
+                # Switch back to Random method
+                self.generation_method.setCurrentText("Random")
     
     def analyze_video(self):
         """Start video analysis for scenes and speech"""
@@ -122,25 +106,34 @@ class VideoClipExtractor(MainWindow):
             QMessageBox.warning(self, "No Video", "Please load a video first!")
             return
         
-        self.analysis_label.setText("⏳ Analyzing video... This may take a minute.")
+        # Check if at least one analysis type is selected
+        if not self.scene_detection_checkbox.isChecked() and not self.audio_detection_checkbox.isChecked():
+            QMessageBox.warning(self, "No Analysis Selected", "Please select at least one analysis type (Scene or Audio Detection)!")
+            return
+        
+        self.progress_label.setText("⏳ Analyzing video... This may take a minute.")
         self.progress_bar.setVisible(True)
         self.progress_bar.setMaximum(0)  # Indeterminate
         
-        self.analysis_thread = AnalysisThread(self.video_path)
+        # Pass analysis options to the thread
+        analyze_scenes = self.scene_detection_checkbox.isChecked()
+        analyze_audio = self.audio_detection_checkbox.isChecked()
+        
+        self.analysis_thread = AnalysisThread(self.video_path, analyze_scenes, analyze_audio)
         self.analysis_thread.progress.connect(self.update_analysis_progress)
         self.analysis_thread.finished.connect(self.analysis_finished)
         self.analysis_thread.start()
     
     def update_analysis_progress(self, message):
         """Update analysis progress display"""
-        self.analysis_label.setText(f"⏳ {message}")
+        self.progress_label.setText(f"⏳ {message}")
     
     def analysis_finished(self, result):
         """Handle analysis completion"""
         self.progress_bar.setVisible(False)
         
         if result['error']:
-            self.analysis_label.setText(f"❌ Analysis failed: {result['error']}")
+            self.progress_label.setText(f"❌ Analysis failed: {result['error']}")
             QMessageBox.warning(self, "Analysis Error", f"Could not analyze video:\n{result['error']}")
             return
         
@@ -148,20 +141,27 @@ class VideoClipExtractor(MainWindow):
         self.speech_boundaries = result['speech_boundaries']
         
         info = f"✓ Analysis complete: {len(self.scenes)} scenes, {len(self.speech_boundaries)} speech boundaries detected"
-        self.analysis_label.setText(info)
-        self.analysis_label.setStyleSheet("padding: 5px; color: #155724; font-weight: bold;")
+        self.progress_label.setText(info)
+        self.progress_label.setStyleSheet("color: #28a745; font-weight: bold;")
     
     def find_smart_boundary(self, time_point, boundary_type='start'):
         """Find the nearest smart boundary for a cut point"""
-        mode = self.mode_combo.currentText()
+        mode = self.get_current_mode()
+        method = self.generation_method.currentText()
         
-        # Determine priority based on mode
-        if "Scene" in mode:
-            priority = "Scene Changes First"
-        elif "Audio" in mode:
-            priority = "Speech Boundaries First"
+        # Only apply smart boundaries if using smart method
+        if mode != "Smart":
+            return time_point
+        
+        # Determine priority based on enabled analysis types
+        if self.scene_detection_checkbox.isChecked() and self.audio_detection_checkbox.isChecked():
+            priority = "Scenes"  # Default to scenes if both are enabled
+        elif self.scene_detection_checkbox.isChecked():
+            priority = "Scenes"
+        elif self.audio_detection_checkbox.isChecked():
+            priority = "Speech"
         else:
-            return time_point  # No adjustment for Random mode
+            priority = "Scenes"  # Fallback
         
         return SmartBoundaryFinder.find_smart_boundary(
             time_point, self.scenes, self.speech_boundaries,
@@ -177,10 +177,10 @@ class VideoClipExtractor(MainWindow):
             QMessageBox.warning(self, "No Video", "Please load a video first!")
             return
         
-        mode = self.mode_combo.currentText()
+        mode = self.get_current_mode()
         num_clips = self.num_clips_spin.value()
         clip_duration = self.clip_duration_spin.value()
-        base_name = self.base_name_input.text().strip() or "short"
+        base_name = "short"  # Fixed base name for simplified UI
         allow_overlap = self.allow_overlap_checkbox.isChecked()
         
         if clip_duration >= self.video_duration:
@@ -188,15 +188,10 @@ class VideoClipExtractor(MainWindow):
                               f"Clip duration must be less than video duration ({self.video_duration}s)")
             return
         
-        # Check if analysis is needed but not done
-        if "Scene" in mode and not self.scenes:
+        # Check if Smart mode is active but no analysis done
+        if mode == "Smart" and not self.scenes and not self.speech_boundaries:
             QMessageBox.warning(self, "Analysis Required", 
-                              "Scene detection mode requires video analysis.\nPlease analyze the video first.")
-            return
-        
-        if "Audio" in mode and not self.speech_boundaries:
-            QMessageBox.warning(self, "Analysis Required", 
-                              "Audio detection mode requires video analysis.\nPlease analyze the video first.")
+                              "Smart Cutting mode requires video analysis.\nPlease analyze the video first.")
             return
         
         # Generate random clips
@@ -212,8 +207,8 @@ class VideoClipExtractor(MainWindow):
                               f"Could only generate {len(generated_clips)} non-overlapping clips. "
                               f"Try shorter duration, fewer clips, or enable 'Allow Overlapping Clips'.")
         
-        # Apply smart boundaries if not in Random mode
-        if mode != "Random" and (self.scenes or self.speech_boundaries):
+        # Apply smart boundaries if in Smart mode and analysis data is available
+        if mode == "Smart" and (self.scenes or self.speech_boundaries):
             adjusted_clips = []
             for start, end, _ in generated_clips:
                 smart_start = self.find_smart_boundary(start, 'start')
@@ -239,43 +234,12 @@ class VideoClipExtractor(MainWindow):
         
         self.update_clips_count()
         
-        mode_msg = f" using {mode} mode" if mode != "Random" else ""
-        QMessageBox.information(self, "Success", 
-                               f"Generated {len(generated_clips)} clips{mode_msg}!")
-    
-    def add_clip(self):
-        """Add a manual clip to the list"""
-        start = self.start_spin.value()
-        end = self.end_spin.value()
-        name = self.clip_name.text().strip()
+        mode_msg = f" using {mode} mode" if mode == "Smart" else ""
+        self.progress_label.setText(f"✅ Generated {len(generated_clips)} clips{mode_msg}!")
         
-        if not name:
-            name = f"manual_clip_{len(self.clips) + 1}"
-        
-        # Validate parameters
-        valid, error_msg = validate_clip_parameters(start, end, self.video_duration)
-        if not valid:
-            QMessageBox.warning(self, "Invalid Range", error_msg)
-            return
-        
-        if not self.video_path:
-            QMessageBox.warning(self, "No Video", "Please load a video first!")
-            return
-        
-        self.clips.append((start, end, name))
-        duration = end - start
-        self.clips_list.addItem(f"{name} ({format_time(start)} - {format_time(end)}, {duration:.1f}s)")
-        
-        self.clip_name.setText("")
-        self.update_clips_count()
-    
-    def remove_clip(self):
-        """Remove selected clip from the list"""
-        current_row = self.clips_list.currentRow()
-        if current_row >= 0:
-            self.clips_list.takeItem(current_row)
-            del self.clips[current_row]
-            self.update_clips_count()
+        # Enable export button if clips were generated
+        if self.clips:
+            self.export_btn.setEnabled(True)
     
     def clear_all_clips(self):
         """Clear all clips from the list"""
