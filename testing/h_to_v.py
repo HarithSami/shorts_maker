@@ -1,140 +1,122 @@
+# pip install opencv-python moviepy imageio-ffmpeg numpy
+
 import cv2
-import os
 import numpy as np
+import os
 from pathlib import Path
+from moviepy.editor import VideoFileClip
 
 def create_blurred_background(frame, target_width, target_height):
-    """Create a blurred background version of the frame"""
-    # Resize frame to fill the target dimensions
+    """Create blurred background filling target aspect."""
     blurred = cv2.GaussianBlur(frame, (51, 51), 0)
-    
-    # Scale to fill the entire target area
     h, w = frame.shape[:2]
     scale = max(target_width / w, target_height / h)
     new_w, new_h = int(w * scale), int(h * scale)
-    
-    blurred_resized = cv2.resize(blurred, (new_w, new_h))
-    
-    # Center crop to target dimensions
+    resized = cv2.resize(blurred, (new_w, new_h))
     start_x = (new_w - target_width) // 2
     start_y = (new_h - target_height) // 2
-    background = blurred_resized[start_y:start_y + target_height, start_x:start_x + target_width]
-    
-    return background
+    return resized[start_y:start_y + target_height, start_x:start_x + target_width]
 
-def convert_horizontal_to_vertical(input_path, output_path, use_blur=True):
-    """
-    Convert horizontal video to vertical 9:16 format
-    
-    Args:
-        input_path: Path to input video
-        output_path: Path for output video
-        use_blur: If True, use blurred background. If False, use black background
-    """
-    
-    # Open input video
+def convert_horizontal_to_vertical(input_path, temp_output_path, use_blur=True):
+    """Convert horizontal video to vertical 9:16 AVI (no audio)."""
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
-        print(f"Error: Could not open video {input_path}")
+        print(f"Error: cannot open {input_path}")
         return False
-    
-    # Get video properties
-    fps = int(cap.get(cv2.CAP_PROP_FPS))
-    original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    print(f"Original dimensions: {original_width}x{original_height}")
-    print(f"FPS: {fps}, Total frames: {total_frames}")
-    
-    # Calculate target dimensions (9:16 aspect ratio)
-    # Use the original height as reference for the vertical dimension
-    target_height = max(original_height, int(original_width * 16/9))
-    target_width = int(target_height * 9/16)
-    
-    print(f"Target dimensions: {target_width}x{target_height}")
-    
-    # Setup video writer
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (target_width, target_height))
-    
-    frame_count = 0
-    
+
+    fps = float(cap.get(cv2.CAP_PROP_FPS)) or 30.0
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"Input {w}x{h} @ {fps:.2f}fps, {frames} frames")
+
+    target_h = max(h, int(w * 16/9))
+    target_w = int(target_h * 9/16)
+    if target_w > 1080:
+        target_w, target_h = 1080, 1920
+    print(f"Output {target_w}x{target_h}")
+
+    if os.path.exists(temp_output_path):
+        os.remove(temp_output_path)
+
+    codecs = [
+        ('MJPG', cv2.VideoWriter_fourcc(*'MJPG')),
+        ('XVID', cv2.VideoWriter_fourcc(*'XVID')),
+        ('DIVX', cv2.VideoWriter_fourcc(*'DIVX')),
+    ]
+    out = None
+    for name, fourcc in codecs:
+        out = cv2.VideoWriter(temp_output_path, fourcc, fps, (target_w, target_h), True)
+        if out.isOpened():
+            print(f"Using codec {name}")
+            break
+        else:
+            out.release()
+            out = None
+    if not out or not out.isOpened():
+        print("Error: could not open any video writer.")
+        cap.release()
+        return False
+
+    frame_idx = 0
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-            
-        frame_count += 1
-        if frame_count % 30 == 0:  # Progress update every 30 frames
-            print(f"Processing frame {frame_count}/{total_frames}")
-        
         if use_blur:
-            # Create blurred background
-            background = create_blurred_background(frame, target_width, target_height)
+            bg = create_blurred_background(frame, target_w, target_h)
         else:
-            # Create black background
-            background = np.zeros((target_height, target_width, 3), dtype=np.uint8)
-        
-        # Scale original frame to fit within target dimensions while maintaining aspect ratio
-        h, w = frame.shape[:2]
-        scale = min(target_width / w, target_height / h)
+            bg = np.zeros((target_h, target_w, 3), np.uint8)
+        scale = min(target_w / w, target_h / h)
         new_w, new_h = int(w * scale), int(h * scale)
-        
-        scaled_frame = cv2.resize(frame, (new_w, new_h))
-        
-        # Center the scaled frame on the background
-        start_x = (target_width - new_w) // 2
-        start_y = (target_height - new_h) // 2
-        
-        background[start_y:start_y + new_h, start_x:start_x + new_w] = scaled_frame
-        
-        out.write(background)
-    
-    # Cleanup
+        scaled = cv2.resize(frame, (new_w, new_h))
+        x = (target_w - new_w) // 2
+        y = (target_h - new_h) // 2
+        bg[y:y + new_h, x:x + new_w] = scaled
+        out.write(np.ascontiguousarray(bg, np.uint8))
+        frame_idx += 1
+        if frame_idx % 30 == 0:
+            print(f"{frame_idx}/{frames} frames processed")
+
     cap.release()
     out.release()
-    
-    print(f"Conversion complete! Output saved to: {output_path}")
+    print(f"Video written to {temp_output_path}")
     return True
 
+def attach_audio(original_video, silent_video, output_with_audio):
+    """Attach original audio track using MoviePy (uses bundled ffmpeg)."""
+    orig = VideoFileClip(original_video)
+    silent = VideoFileClip(silent_video)
+    if orig.audio is None:
+        print("No audio track found in original.")
+        silent.write_videofile(output_with_audio, codec='libx264', audio=False)
+        return
+    final = silent.set_audio(orig.audio)
+    final.write_videofile(output_with_audio, codec='libx264', audio_codec='aac')
+
 def main():
-    # Configuration
-    USE_BLUR_BACKGROUND = True  # Toggle this to switch between blur and black background
-    
-    # Paths
     input_dir = Path("input")
     output_dir = Path("export")
     input_file = input_dir / "input.mp4"
-    
-    # Create directories if they don't exist
+    temp_output = output_dir / "vertical_temp.avi"
+    final_output = output_dir / "vertical_output_with_audio.mp4"
+
     input_dir.mkdir(exist_ok=True)
     output_dir.mkdir(exist_ok=True)
-    
-    # Check if input file exists
+
     if not input_file.exists():
-        print(f"Error: Input file not found at {input_file}")
-        print("Please place your video file at 'input/input.mp4'")
+        print(f"Missing input file: {input_file}")
         return
-    
-    # Generate output filename
-    background_type = "blur" if USE_BLUR_BACKGROUND else "black"
-    output_file = output_dir / f"vertical_{background_type}_{input_file.stem}.mp4"
-    
+
     print(f"Converting {input_file} to vertical format...")
-    print(f"Background type: {'Blurred' if USE_BLUR_BACKGROUND else 'Black'}")
-    
-    # Convert video
-    success = convert_horizontal_to_vertical(
-        str(input_file), 
-        str(output_file), 
-        USE_BLUR_BACKGROUND
-    )
-    
-    if success:
-        print(f"\n✅ Success! Vertical video saved as: {output_file}")
-    else:
-        print("\n❌ Conversion failed!")
+    success = convert_horizontal_to_vertical(str(input_file), str(temp_output), use_blur=True)
+    if not success:
+        print("Conversion failed.")
+        return
+
+    print("Attaching audio...")
+    attach_audio(str(input_file), str(temp_output), str(final_output))
+    print(f"Final video saved to {final_output}")
 
 if __name__ == "__main__":
     main()
