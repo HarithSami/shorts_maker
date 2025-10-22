@@ -95,6 +95,9 @@ def attach_audio(original_video, silent_video, output_with_audio):
     final.write_videofile(output_with_audio, codec='libx264', audio_codec='aac')
 
 def main():
+    # Configuration: Set to False for black background, True for blurred background
+    USE_BLURRED_BACKGROUND = False
+    
     input_dir = Path("input")
     output_dir = Path("export")
     input_file = input_dir / "input.mp4"
@@ -108,8 +111,9 @@ def main():
         print(f"Missing input file: {input_file}")
         return
 
-    print(f"Converting {input_file} to vertical format...")
-    success = convert_horizontal_to_vertical(str(input_file), str(temp_output), use_blur=True)
+    background_type = "blurred" if USE_BLURRED_BACKGROUND else "black"
+    print(f"Converting {input_file} to vertical format with {background_type} background...")
+    success = convert_horizontal_to_vertical(str(input_file), str(temp_output), use_blur=USE_BLURRED_BACKGROUND)
     if not success:
         print("Conversion failed.")
         return
@@ -117,6 +121,11 @@ def main():
     print("Attaching audio...")
     attach_audio(str(input_file), str(temp_output), str(final_output))
     print(f"Final video saved to {final_output}")
+    
+    # Clean up temporary file
+    if temp_output.exists():
+        temp_output.unlink()
+        print(f"Cleaned up temporary file: {temp_output}")
 
 if __name__ == "__main__":
     main()
