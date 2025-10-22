@@ -41,6 +41,7 @@ class VideoClipExtractor(MainWindow):
         self.clear_btn.clicked.connect(self.clear_all_clips)
         self.export_btn.clicked.connect(self.export_clips)
         self.analyze_btn.clicked.connect(self.analyze_video)
+        self.add_manual_clip_btn.clicked.connect(self.add_manual_clip)
         
         # Connect generation method change to enable/disable smart options
         self.generation_method.currentTextChanged.connect(self.on_method_changed)
@@ -70,6 +71,10 @@ class VideoClipExtractor(MainWindow):
             # Enable buttons
             self.analyze_btn.setEnabled(True)
             self.generate_btn.setEnabled(True)
+            
+            # Enable manual clip controls
+            self.manual_start_input.setEnabled(True)
+            self.add_manual_clip_btn.setEnabled(True)
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load video: {str(e)}")
@@ -240,6 +245,82 @@ class VideoClipExtractor(MainWindow):
         # Enable export button if clips were generated
         if self.clips:
             self.export_btn.setEnabled(True)
+    
+    def add_manual_clip(self):
+        """Add a manual clip based on user input"""
+        if not self.video_path:
+            QMessageBox.warning(self, "No Video", "Please load a video first!")
+            return
+        
+        # Get start time from input
+        time_text = self.manual_start_input.text().strip()
+        if not time_text:
+            QMessageBox.warning(self, "Invalid Input", "Please enter a start time in MM:SS format!")
+            return
+        
+        try:
+            # Parse MM:SS format
+            if ":" in time_text:
+                parts = time_text.split(":")
+                if len(parts) != 2:
+                    raise ValueError("Invalid format")
+                minutes, seconds = int(parts[0]), int(parts[1])
+                start_time = minutes * 60 + seconds
+            else:
+                # Try to parse as seconds only
+                start_time = float(time_text)
+        except (ValueError, IndexError):
+            QMessageBox.warning(self, "Invalid Input", "Please enter time in MM:SS format (e.g., 01:30)!")
+            return
+        
+        # Get clip duration from settings
+        clip_duration = self.clip_duration_spin.value()
+        end_time = start_time + clip_duration
+        
+        # Validate clip bounds
+        if start_time < 0:
+            QMessageBox.warning(self, "Invalid Time", "Start time cannot be negative!")
+            return
+        
+        if start_time >= self.video_duration:
+            QMessageBox.warning(self, "Invalid Time", 
+                              f"Start time cannot be at or beyond video duration ({format_time(self.video_duration)})!")
+            return
+        
+        # Auto-adjust end time if it extends beyond video duration
+        if end_time > self.video_duration:
+            end_time = self.video_duration
+        
+        # Apply smart boundaries if in Smart mode
+        mode = self.get_current_mode()
+        if mode == "Smart" and (self.scenes or self.speech_boundaries):
+            smart_start = self.find_smart_boundary(start_time, 'start')
+            smart_end = self.find_smart_boundary(end_time, 'end')
+            
+            # Ensure valid clip after smart adjustment
+            if smart_end > smart_start and smart_end <= self.video_duration:
+                start_time, end_time = smart_start, smart_end
+        
+        # Generate clip name
+        clip_count = len(self.clips) + 1
+        clip_name = f"manual_{clip_count:04d}"
+        
+        # Add clip to list
+        self.clips.append((start_time, end_time, clip_name))
+        duration = end_time - start_time
+        self.clips_list.addItem(
+            f"{clip_name} ({format_time(start_time)} - {format_time(end_time)}, {duration:.1f}s)"
+        )
+        
+        self.update_clips_count()
+        
+        # Enable export button
+        self.export_btn.setEnabled(True)
+        
+        # Clear input and show success
+        self.manual_start_input.clear()
+        self.manual_start_input.setText("00:00")
+        self.progress_label.setText(f"✅ Added manual clip: {clip_name}")
     
     def clear_all_clips(self):
         """Clear all clips from the list"""

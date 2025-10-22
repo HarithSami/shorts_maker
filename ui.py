@@ -5,8 +5,8 @@ from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QLabel, QSpinBox, QDoubleSpinBox,
                              QListWidget, QLineEdit, QProgressBar, QFrame,
                              QCheckBox, QComboBox, QFileDialog, QAbstractSpinBox)
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor
+from PyQt6.QtCore import Qt, pyqtSignal, QRegularExpression
+from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor, QRegularExpressionValidator
 
 
 class DropZone(QFrame):
@@ -337,6 +337,10 @@ class MainWindow(QMainWindow):
         self.analyze_btn.setEnabled(True)
         self.generate_btn.setEnabled(True)
         
+        # Enable manual clip controls
+        self.manual_start_input.setEnabled(True)
+        self.add_manual_clip_btn.setEnabled(True)
+        
         # Update drop zone appearance
         self.drop_zone.text_label.setText(f"✅ {filename}")
         self.drop_zone.setStyleSheet("""
@@ -388,7 +392,7 @@ class MainWindow(QMainWindow):
         options_layout.addSpacing(20)
         
         self.audio_detection_checkbox = QCheckBox("Audio Detection")
-        self.audio_detection_checkbox.setChecked(True)
+        self.audio_detection_checkbox.setChecked(False)
         options_layout.addWidget(self.audio_detection_checkbox)
         
         options_layout.addStretch()
@@ -432,7 +436,7 @@ class MainWindow(QMainWindow):
         row1.addWidget(QLabel("Duration:"))
         self.clip_duration_spin = QDoubleSpinBox()
         self.clip_duration_spin.setRange(1.0, 180.0)
-        self.clip_duration_spin.setValue(60.0)
+        self.clip_duration_spin.setValue(30.0)
         self.clip_duration_spin.setMaximumWidth(80)
         self.clip_duration_spin.setDecimals(1)
         self.clip_duration_spin.setSingleStep(0.5)
@@ -459,16 +463,47 @@ class MainWindow(QMainWindow):
             "Random",
             "Smart Detection"
         ])
+        self.generation_method.setCurrentText("Smart Detection")
         self.generation_method.setMinimumWidth(200)
         self.generation_method.setMaximumWidth(250)
         row2.addWidget(self.generation_method)
         
         row2.addSpacing(20)
         self.allow_overlap_checkbox = QCheckBox("Allow Overlapping")
+        self.allow_overlap_checkbox.setChecked(True)
         row2.addWidget(self.allow_overlap_checkbox)
         
         row2.addStretch()
         layout.addLayout(row2)
+        
+        # Manual clip title
+        manual_clip_title = QLabel("Manual Clip")
+        manual_clip_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
+        manual_clip_title.setStyleSheet("color: #fff; margin-top: 10px; margin-bottom: 5px;")
+        layout.addWidget(manual_clip_title)
+        
+        # Third row - Manual clip
+        row3 = QHBoxLayout()
+        row3.addWidget(QLabel("Clip Start:"))
+        self.manual_start_input = QLineEdit()
+        self.manual_start_input.setText("00:00")
+        self.manual_start_input.setMaximumWidth(80)
+        self.manual_start_input.setPlaceholderText("MM:SS")
+        self.manual_start_input.setEnabled(False)  # Disabled initially
+        # Add input validation for MM:SS format
+        time_regex = QRegularExpression(r"^([0-9]{1,2}):([0-5][0-9])$")
+        time_validator = QRegularExpressionValidator(time_regex)
+        self.manual_start_input.setValidator(time_validator)
+        row3.addWidget(self.manual_start_input)
+        
+        self.add_manual_clip_btn = QPushButton("➕ Add")
+        self.add_manual_clip_btn.setStyleSheet(self._get_button_style("#17a2b8"))
+        self.add_manual_clip_btn.setMaximumWidth(80)
+        self.add_manual_clip_btn.setEnabled(False)  # Disabled initially
+        row3.addWidget(self.add_manual_clip_btn)
+        
+        row3.addStretch()
+        layout.addLayout(row3)
         
         return frame
     
@@ -520,8 +555,8 @@ class MainWindow(QMainWindow):
     
     @property 
     def add_clip_btn(self):
-        """Compatibility property - manual clip adding removed for minimal UI"""
-        return None
+        """Compatibility property - returns the manual add clip button"""
+        return self.add_manual_clip_btn
     
     @property
     def remove_btn(self):
@@ -537,11 +572,27 @@ class MainWindow(QMainWindow):
     
     @property
     def start_spin(self):
-        """Compatibility property - manual clip adding removed"""
-        class DummySpin:
-            def setMaximum(self, val): pass
-            def value(self): return 0
-        return DummySpin()
+        """Compatibility property - returns a wrapper for the manual time input"""
+        class TimeInputWrapper:
+            def __init__(self, time_input):
+                self.time_input = time_input
+            
+            def setMaximum(self, val):
+                pass  # Not needed for time input
+            
+            def value(self):
+                """Convert MM:SS format to seconds"""
+                time_text = self.time_input.text()
+                try:
+                    if ":" in time_text:
+                        minutes, seconds = time_text.split(":")
+                        return int(minutes) * 60 + int(seconds)
+                    else:
+                        return 0
+                except (ValueError, IndexError):
+                    return 0
+        
+        return TimeInputWrapper(self.manual_start_input)
     
     @property
     def end_spin(self):

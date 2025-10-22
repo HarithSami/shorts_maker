@@ -3,3 +3,5 @@ pretrained_models/
 .vscode/
 __pycache__/
 export/
+testing/input/
+testing/export/
