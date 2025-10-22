@@ -29,68 +29,117 @@ class ExportThread(QThread):
         self.output_folder = output_folder
         
     def run(self):
-        video = None
-        try:
-            # Load video once outside the loop for efficiency
-            video = VideoFileClip(self.video_path)
+        """Export clips with proper resource management to avoid subprocess issues"""
+        import gc
+        
+        for i, clip_info in enumerate(self.clips):
+            start, end, name = clip_info
+            self.progress.emit(i + 1, f"Exporting: {name} ({i+1}/{len(self.clips)})")
             
-            for i, clip_info in enumerate(self.clips):
-                start, end, name = clip_info
-                self.progress.emit(i + 1, f"Exporting: {name} ({i+1}/{len(self.clips)})")
-                
-                output_path = os.path.join(self.output_folder, f"{name}.mp4")
+            output_path = os.path.join(self.output_folder, f"{name}.mp4")
+            
+            # Load video fresh for each clip to avoid resource conflicts
+            video = None
+            clip = None
+            
+            try:
+                # Load video for this specific clip
+                video = VideoFileClip(self.video_path)
                 
                 # Create subclip - use different method name based on version
-                try:
-                    if MOVIEPY_V2 or hasattr(video, 'subclipped'):
-                        # MoviePy v2.0+ uses subclipped()
-                        clip = video.subclipped(start, end)
-                    else:
-                        # MoviePy v1.x uses subclip()
-                        clip = video.subclip(start, end)
-                    
-                    # Write video file with error suppression
-                    clip.write_videofile(
-                        output_path, 
-                        codec='libx264', 
-                        audio_codec='aac',
-                        temp_audiofile='temp-audio.m4a',
-                        remove_temp=True,
-                        logger=None,
-                        preset='medium',
-                        threads=4
-                    )
-                    
-                    # Close the clip to free resources
-                    clip.close()
-                    
-                except AttributeError as e:
-                    # Provide helpful error message
-                    error_msg = (
-                        f"MoviePy compatibility issue detected.\n\n"
-                        f"Your MoviePy version may be incompatible.\n"
-                        f"Please try one of the following:\n\n"
-                        f"1. Update to latest: pip install --upgrade moviepy\n"
-                        f"2. Or install v1.0.3: pip uninstall moviepy && pip install moviepy==1.0.3\n\n"
-                        f"Error: {str(e)}"
-                    )
-                    self.finished.emit(False, error_msg)
-                    return
-                except Exception as e:
-                    self.finished.emit(False, f"Error exporting {name}: {str(e)}")
-                    return
+                if MOVIEPY_V2 or hasattr(video, 'subclipped'):
+                    # MoviePy v2.0+ uses subclipped()
+                    clip = video.subclipped(start, end)
+                else:
+                    # MoviePy v1.x uses subclip()
+                    clip = video.subclip(start, end)
                 
-            self.finished.emit(True, f"✅ All {len(self.clips)} clips exported successfully!\n\nLocation: {self.output_folder}")
-            
-        except Exception as e:
-            self.finished.emit(False, f"Error loading video: {str(e)}")
-        finally:
-            # Always close the video file
-            if video is not None:
-                try:
-                    video.close()
-                except:
-                    pass
+                # Write video file with multiple fallback strategies
+                success = False
+                
+                # Strategy 1: Try with all parameters
+                if not success:
+                    try:
+                        clip.write_videofile(
+                            output_path, 
+                            codec='libx264', 
+                            audio_codec='aac',
+                            temp_audiofile=f'temp-audio-{i}.m4a',
+                            remove_temp=True,
+                            logger=None,
+                            preset='medium',
+                            threads=2,  # Reduced threads to avoid conflicts
+                            verbose=False
+                        )
+                        success = True
+                    except (AttributeError, TypeError, OSError):
+                        pass
+                
+                # Strategy 2: Try without logger parameter
+                if not success:
+                    try:
+                        clip.write_videofile(
+                            output_path, 
+                            codec='libx264', 
+                            audio_codec='aac',
+                            temp_audiofile=f'temp-audio-{i}.m4a',
+                            remove_temp=True,
+                            preset='medium',
+                            threads=2,
+                            verbose=False
+                        )
+                        success = True
+                    except (AttributeError, TypeError, OSError):
+                        pass
+                
+                # Strategy 3: Minimal parameters
+                if not success:
+                    try:
+                        clip.write_videofile(
+                            output_path, 
+                            codec='libx264',
+                            verbose=False
+                        )
+                        success = True
+                    except Exception as e:
+                        error_msg = (
+                            f"MoviePy compatibility issue detected.\n\n"
+                            f"Your MoviePy version may be incompatible.\n"
+                            f"Please try one of the following:\n\n"
+                            f"1. Update to latest: pip install --upgrade moviepy\n"
+                            f"2. Or install v1.0.3: pip uninstall moviepy && pip install moviepy==1.0.3\n\n"
+                            f"Error: {str(e)}"
+                        )
+                        self.finished.emit(False, error_msg)
+                        return
+                
+                if not success:
+                    self.finished.emit(False, f"Failed to export {name} after trying all methods")
+                    return
+                    
+            except Exception as e:
+                self.finished.emit(False, f"Error processing {name}: {str(e)}")
+                return
+            finally:
+                # Ensure proper cleanup for each clip
+                if clip is not None:
+                    try:
+                        clip.close()
+                        del clip
+                    except:
+                        pass
+                
+                if video is not None:
+                    try:
+                        video.close()
+                        del video
+                    except:
+                        pass
+                
+                # Force garbage collection to free resources
+                gc.collect()
+                
+        self.finished.emit(True, f"✅ All {len(self.clips)} clips exported successfully!\n\nLocation: {self.output_folder}")
 
 
 class ClipGenerator:

@@ -2,3 +2,4 @@ venv/
 pretrained_models/
 .vscode/
 __pycache__/
+export/
