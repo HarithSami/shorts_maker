@@ -4,7 +4,8 @@ Modern Dark UI for Smart YouTube Shorts Clip Generator
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QPushButton, QLabel, QSpinBox, QDoubleSpinBox,
                              QListWidget, QLineEdit, QProgressBar, QFrame,
-                             QCheckBox, QComboBox, QFileDialog, QAbstractSpinBox)
+                             QCheckBox, QComboBox, QFileDialog, QAbstractSpinBox,
+                             QTabWidget)
 from PyQt6.QtCore import Qt, pyqtSignal, QRegularExpression
 from PyQt6.QtGui import QFont, QDragEnterEvent, QDropEvent, QPalette, QColor, QRegularExpressionValidator
 
@@ -16,7 +17,7 @@ class DropZone(QFrame):
     def __init__(self):
         super().__init__()
         self.setAcceptDrops(True)
-        self.setMinimumHeight(120)
+        self.setMinimumHeight(80)
         self.setFrameStyle(QFrame.Shape.Box)
         self.setLineWidth(2)
         self.setStyleSheet("""
@@ -36,15 +37,15 @@ class DropZone(QFrame):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.icon_label = QLabel("📁")
-        self.icon_label.setFont(QFont("Arial", 32))
+        self.icon_label.setFont(QFont("Arial", 24))
         self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.icon_label.setStyleSheet("border: none; outline: none;")
         layout.addWidget(self.icon_label)
         
         self.text_label = QLabel("Drop video file here or click to browse")
-        self.text_label.setFont(QFont("Arial", 12))
+        self.text_label.setFont(QFont("Arial", 11))
         self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.text_label.setStyleSheet("color: #ccc; margin: 10px; border: none; outline: none;")
+        self.text_label.setStyleSheet("color: #ccc; margin: 5px; border: none; outline: none;")
         layout.addWidget(self.text_label)
         
         self.setLayout(layout)
@@ -101,7 +102,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("YouTube Shorts Clip Generator")
-        self.setGeometry(100, 100, 800, 650)
+        self.setGeometry(100, 100, 800, 520)
         self.current_video_path = None
         
         # Apply dark theme
@@ -111,14 +112,14 @@ class MainWindow(QMainWindow):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(20)
-        main_layout.setContentsMargins(25, 25, 25, 25)
+        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(20, 15, 20, 15)
         
         # Title
         title = QLabel("YouTube Shorts Generator")
-        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
+        title.setFont(QFont("Segoe UI", 16, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("color: #fff; margin-bottom: 10px;")
+        title.setStyleSheet("color: #fff; margin-bottom: 5px;")
         main_layout.addWidget(title)
         
         # Drop Zone
@@ -132,13 +133,9 @@ class MainWindow(QMainWindow):
         self.video_info_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.video_info_label)
         
-        # Analysis options
-        analysis_frame = self._create_analysis_frame()
-        main_layout.addWidget(analysis_frame)
-        
-        # Clip settings
-        settings_frame = self._create_settings_frame()
-        main_layout.addWidget(settings_frame)
+        # Create tabbed interface
+        self.tab_widget = self._create_tab_widget()
+        main_layout.addWidget(self.tab_widget)
         
         # Generate button
         self.generate_btn = QPushButton("✨ Generate Clips")
@@ -295,11 +292,37 @@ class MainWindow(QMainWindow):
                 background-color: #007acc;
                 border-color: #007acc;
             }
+            QTabWidget::pane {
+                border: 1px solid #555;
+                border-radius: 5px;
+                background-color: #2a2a2a;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background-color: #3a3a3a;
+                color: #ccc;
+                padding: 8px 16px;
+                margin-right: 2px;
+                border-top-left-radius: 5px;
+                border-top-right-radius: 5px;
+                border: 1px solid #555;
+                border-bottom: none;
+            }
+            QTabBar::tab:selected {
+                background-color: #2a2a2a;
+                color: #fff;
+                border-color: #007acc;
+                border-bottom: 1px solid #2a2a2a;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #4a4a4a;
+                color: #fff;
+            }
         """)
     
     def _get_button_style(self, color, large=False):
         """Get button style with specified color"""
-        size = "padding: 12px 30px; font-size: 14px;" if large else "padding: 8px 20px; font-size: 12px;"
+        size = "padding: 10px 25px; font-size: 13px;" if large else "padding: 6px 15px; font-size: 11px;"
         return f"""
             QPushButton {{
                 {size}
@@ -329,6 +352,23 @@ class MainWindow(QMainWindow):
         }
         return color_map.get(color, color)
     
+    def _create_tab_widget(self):
+        """Create tabbed interface for settings and analysis"""
+        tab_widget = QTabWidget()
+        
+        # Create settings tab (default)
+        settings_frame = self._create_settings_frame()
+        tab_widget.addTab(settings_frame, "⚙️ Clip Settings")
+        
+        # Create analysis tab
+        analysis_frame = self._create_analysis_frame()
+        tab_widget.addTab(analysis_frame, "🔍 Video Analysis")
+        
+        # Set clips settings as default tab
+        tab_widget.setCurrentIndex(0)
+        
+        return tab_widget
+    
     def handle_file_drop(self, file_path):
         """Handle file drop/selection"""
         self.current_video_path = file_path
@@ -354,33 +394,21 @@ class MainWindow(QMainWindow):
     
     def _create_analysis_frame(self):
         """Create analysis options frame"""
-        frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #2a2a2a;
-                border-radius: 10px;
-                padding: 15px;
-            }
-        """)
+        frame = QWidget()
         
         layout = QVBoxLayout(frame)
         layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
         
-        # Header
-        header_layout = QHBoxLayout()
-        analysis_label = QLabel("Video Analysis")
-        analysis_label.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        header_layout.addWidget(analysis_label)
-        header_layout.addStretch()
-        
-        # Analyze button
+        # Analyze button at top
+        button_layout = QHBoxLayout()
         self.analyze_btn = QPushButton("🔍 Analyze Video")
         self.analyze_btn.setEnabled(False)
         self.analyze_btn.setStyleSheet(self._get_button_style("#28a745"))
         self.analyze_btn.setMaximumWidth(150)
-        header_layout.addWidget(self.analyze_btn)
-        
-        layout.addLayout(header_layout)
+        button_layout.addWidget(self.analyze_btn)
+        button_layout.addStretch()
+        layout.addLayout(button_layout)
         
         # Checkboxes for analysis options
         options_layout = QHBoxLayout()
@@ -398,21 +426,18 @@ class MainWindow(QMainWindow):
         options_layout.addStretch()
         layout.addLayout(options_layout)
         
+        # Add stretch to push content to top
+        layout.addStretch()
+        
         return frame
     
     def _create_settings_frame(self):
         """Create settings frame"""
-        frame = QFrame()
-        frame.setStyleSheet("""
-            QFrame {
-                background-color: #2a2a2a;
-                border-radius: 10px;
-                padding: 15px;
-            }
-        """)
+        frame = QWidget()
         
         layout = QVBoxLayout(frame)
-        layout.setSpacing(15)
+        layout.setSpacing(10)
+        layout.setContentsMargins(10, 10, 10, 10)
         
         # First row
         row1 = QHBoxLayout()
@@ -479,7 +504,7 @@ class MainWindow(QMainWindow):
         # Manual clip title
         manual_clip_title = QLabel("Manual Clip")
         manual_clip_title.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
-        manual_clip_title.setStyleSheet("color: #fff; margin-top: 10px; margin-bottom: 5px;")
+        manual_clip_title.setStyleSheet("color: #fff; margin-top: 5px; margin-bottom: 2px;")
         layout.addWidget(manual_clip_title)
         
         # Third row - Manual clip
@@ -514,7 +539,7 @@ class MainWindow(QMainWindow):
             QFrame {
                 background-color: #2a2a2a;
                 border-radius: 10px;
-                padding: 15px;
+                padding: 10px;
             }
         """)
         
@@ -542,7 +567,7 @@ class MainWindow(QMainWindow):
         
         # Clips list
         self.clips_list = QListWidget()
-        self.clips_list.setMaximumHeight(120)
+        self.clips_list.setMaximumHeight(90)
         layout.addWidget(self.clips_list)
         
         return frame
