@@ -1,20 +1,10 @@
 """
-Video export functionality for creating clips
+Video export functionality for creating clips using direct FFmpeg (faster than MoviePy)
 """
 import os
+import subprocess
+import cv2
 from PyQt6.QtCore import QThread, pyqtSignal
-
-# Try importing from different locations based on moviepy version
-try:
-    from moviepy import VideoFileClip  # MoviePy v2.0+
-    MOVIEPY_V2 = True
-except ImportError:
-    try:
-        from moviepy.editor import VideoFileClip  # MoviePy v1.x
-        MOVIEPY_V2 = False
-    except ImportError:
-        from moviepy.video.io.VideoFileClip import VideoFileClip  # Fallback
-        MOVIEPY_V2 = False
 
 
 class ExportThread(QThread):
@@ -29,115 +19,68 @@ class ExportThread(QThread):
         self.output_folder = output_folder
         
     def run(self):
-        """Export clips with proper resource management to avoid subprocess issues"""
-        import gc
+        """Export clips using direct FFmpeg (much faster than MoviePy)"""
         
+        # Get video info first
+        try:
+            cap = cv2.VideoCapture(self.video_path)
+            if not cap.isOpened():
+                self.finished.emit(False, f"Could not open video: {self.video_path}")
+                return
+            
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            cap.release()
+            
+        except Exception as e:
+            self.finished.emit(False, f"Failed to read video info: {str(e)}")
+            return
+        
+        # Process each clip using direct FFmpeg (like auto-crop-ai.py)
         for i, clip_info in enumerate(self.clips):
             start, end, name = clip_info
             self.progress.emit(i + 1, f"Exporting: {name} ({i+1}/{len(self.clips)})")
             
             output_path = os.path.join(self.output_folder, f"{name}.mp4")
             
-            # Load video fresh for each clip to avoid resource conflicts
-            video = None
-            clip = None
-            
             try:
-                # Load video for this specific clip
-                video = VideoFileClip(self.video_path)
+                # Use FFmpeg directly for maximum speed (like auto-crop-ai.py)
+                command = [
+                    'ffmpeg', '-y',  # Overwrite output files
+                    '-i', self.video_path,  # Input file
+                    '-ss', str(start),  # Start time
+                    '-t', str(end - start),  # Duration
+                    '-c:v', 'libx264',  # Video codec
+                    '-preset', 'fast',  # Fast encoding preset
+                    '-crf', '23',  # Quality setting
+                    '-c:a', 'aac',  # Audio codec
+                    '-avoid_negative_ts', 'make_zero',  # Fix timestamp issues
+                    output_path
+                ]
                 
-                # Create subclip - use different method name based on version
-                if MOVIEPY_V2 or hasattr(video, 'subclipped'):
-                    # MoviePy v2.0+ uses subclipped()
-                    clip = video.subclipped(start, end)
-                else:
-                    # MoviePy v1.x uses subclip()
-                    clip = video.subclip(start, end)
+                # Run FFmpeg command
+                result = subprocess.run(
+                    command, 
+                    capture_output=True, 
+                    text=True, 
+                    check=True
+                )
                 
-                # Write video file with multiple fallback strategies
-                success = False
-                
-                # Strategy 1: Try with all parameters
-                if not success:
-                    try:
-                        clip.write_videofile(
-                            output_path, 
-                            codec='libx264', 
-                            audio_codec='aac',
-                            temp_audiofile=f'temp-audio-{i}.m4a',
-                            remove_temp=True,
-                            logger=None,
-                            preset='medium',
-                            threads=2,  # Reduced threads to avoid conflicts
-                            verbose=False
-                        )
-                        success = True
-                    except (AttributeError, TypeError, OSError):
-                        pass
-                
-                # Strategy 2: Try without logger parameter
-                if not success:
-                    try:
-                        clip.write_videofile(
-                            output_path, 
-                            codec='libx264', 
-                            audio_codec='aac',
-                            temp_audiofile=f'temp-audio-{i}.m4a',
-                            remove_temp=True,
-                            preset='medium',
-                            threads=2,
-                            verbose=False
-                        )
-                        success = True
-                    except (AttributeError, TypeError, OSError):
-                        pass
-                
-                # Strategy 3: Minimal parameters
-                if not success:
-                    try:
-                        clip.write_videofile(
-                            output_path, 
-                            codec='libx264',
-                            verbose=False
-                        )
-                        success = True
-                    except Exception as e:
-                        error_msg = (
-                            f"MoviePy compatibility issue detected.\n\n"
-                            f"Your MoviePy version may be incompatible.\n"
-                            f"Please try one of the following:\n\n"
-                            f"1. Update to latest: pip install --upgrade moviepy\n"
-                            f"2. Or install v1.0.3: pip uninstall moviepy && pip install moviepy==1.0.3\n\n"
-                            f"Error: {str(e)}"
-                        )
-                        self.finished.emit(False, error_msg)
-                        return
-                
-                if not success:
-                    self.finished.emit(False, f"Failed to export {name} after trying all methods")
-                    return
-                    
+            except subprocess.CalledProcessError as e:
+                error_msg = f"FFmpeg failed for {name}:\n{e.stderr}"
+                self.finished.emit(False, error_msg)
+                return
+            except FileNotFoundError:
+                error_msg = (
+                    "FFmpeg not found! Please install FFmpeg:\n\n"
+                    "Windows: Download from https://ffmpeg.org/download.html\n"
+                    "Or use: winget install ffmpeg\n\n"
+                    "This method is much faster than MoviePy!"
+                )
+                self.finished.emit(False, error_msg)
+                return
             except Exception as e:
                 self.finished.emit(False, f"Error processing {name}: {str(e)}")
                 return
-            finally:
-                # Ensure proper cleanup for each clip
-                if clip is not None:
-                    try:
-                        clip.close()
-                        del clip
-                    except:
-                        pass
-                
-                if video is not None:
-                    try:
-                        video.close()
-                        del video
-                    except:
-                        pass
-                
-                # Force garbage collection to free resources
-                gc.collect()
                 
         self.finished.emit(True, f"✅ All {len(self.clips)} clips exported successfully!\n\nLocation: {self.output_folder}")
 

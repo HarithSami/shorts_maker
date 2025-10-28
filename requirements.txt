@@ -7,3 +7,9 @@ librosa>=0.10.0
 scipy>=1.9.0
 opencv-python
 ffmpeg
+opencv-python
+scenedetect[opencv]
+ultralytics
+torch
+torchvision
+tqdm
